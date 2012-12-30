@@ -1,92 +1,25 @@
 package main
 
 import (
-  "runtime"
-  "fmt"
-  "os"
-  "syscall"
-  "strings"
-  "bytes"
-  "bufio"
-  "io"
+	. "code.google.com/p/goncurses"
+	"fmt"
+	"os"
   "stringsim/adjpair"
 )
 
-type SimilarDir struct {
-  dir string // directory name
-  pairs adjpair.Pairs // pairs
-  six float64 // similarity index
-}
+const (
+	HEIGHT = 10
+	WIDTH  = 30
+)
 
-var LAST_DIR SimilarDir = SimilarDir{"", nil, 0.0}
+const SIMILARITY_CUT float64 = 0.00005
 const CHANNEL_BUFFER = 1024
-
-func ReadCache2(filename string, out chan *SimilarDir) error {
-  f, err := os.Open(filename)
-  if err != nil {
-    fmt.Println("error opening file ", err)
-    os.Exit(1)
-  }
-  defer f.Close()
-  r := bufio.NewReader(f)
-  for {
-    path, err := r.ReadString(0)
-    if err == io.EOF {
-      out <- &LAST_DIR
-      break
-    } else if err != nil {
-      return err
-    }
-    dir := SimilarDir{strings.TrimSpace(path), nil, 0.0}
-    out <- &dir
-  }
-  return nil
-}
-
-func ReadCache(filename string, out chan *SimilarDir) error {
-  // TODO optimize open/close (encaptulate)
-  map_file, err := os.Open(filename)
-  if err != nil {
-    return err
-  }
-  stat, err := map_file.Stat()
-  if err != nil {
-    return err
-  }
-  b, err := syscall.Mmap((int)(map_file.Fd()), 0, (int)(stat.Size()), syscall.PROT_READ, syscall.MAP_SHARED)
-  if err != nil {
-    return err
-  }
-
-  buffer := bytes.NewBuffer(b)
-  for {
-    path, err := buffer.ReadString(0)
-    if err == io.EOF {
-      out <- &LAST_DIR
-      break
-    } else if err != nil {
-      return err
-    }
-    dir := SimilarDir{strings.TrimSpace(path), nil, 0.0}
-    out <- &dir
-  }
-
-  // defer?
-  err = syscall.Munmap(b)
-  if err != nil {
-    return err
-  }
-  err = map_file.Close()
-  if err != nil {
-    return err
-  }
-  return nil
-}
+var LAST_DIR SimilarDir = SimilarDir{"", nil, 0.0}
 
 func PreparePairs(in chan *SimilarDir, out chan *SimilarDir) {
   for {
-    dir := <- in
-    dir.pairs = adjpair.NewPairsFromString(dir.dir)
+    dir := <-in
+    dir.pairs = adjpair.NewPairsFromFilepath(dir.dir)
     out <- dir
     if dir == &LAST_DIR {
       break
@@ -96,7 +29,7 @@ func PreparePairs(in chan *SimilarDir, out chan *SimilarDir) {
 
 func ComputeSimilarities(search_pairs adjpair.Pairs, in chan *SimilarDir, out chan *SimilarDir) {
   for {
-    dir := <- in
+    dir := <-in
     dir.six = search_pairs.Match(dir.pairs)
     out <- dir
     if dir == &LAST_DIR {
@@ -105,24 +38,112 @@ func ComputeSimilarities(search_pairs adjpair.Pairs, in chan *SimilarDir, out ch
   }
 }
 
-func Search(searchstr string, max_results int) {
-  search_pairs := adjpair.NewPairsFromString(searchstr)
-  read_ch := make(chan *SimilarDir, CHANNEL_BUFFER)
-  prepare_ch := make(chan *SimilarDir, CHANNEL_BUFFER)
-  compute_ch := make(chan *SimilarDir, CHANNEL_BUFFER)
-  go ReadCache("var", read_ch)
-  go PreparePairs(read_ch, prepare_ch)
-  go ComputeSimilarities(search_pairs, prepare_ch, compute_ch)
-  for {
-    simdir := <- compute_ch
-    fmt.Println(simdir.dir, simdir.six)
-    if len(simdir.dir) == 0 {
-      break
-    }
-  }
+func ReadKeys(stdscr Window, out chan Key) {
+	for {
+		ch := stdscr.GetChar()
+		out <- ch
+		if KeyString(ch) == "q" {
+			break
+		}
+	}
 }
 
 func main() {
-  runtime.GOMAXPROCS(4)
-  Search("conf", 30)
+	// prepare cache
+	cache, err := OpenCache("var")
+  if err != nil {
+    fmt.Println("error opening file ", err)
+    os.Exit(1)
+  }
+  defer cache.Close()
+
+	var active int
+	var query = ""
+	result_slice := []string{}
+
+	stdscr, _ := Init()
+	defer End()
+
+	Raw(true)
+	Echo(false)
+	Cursor(0)
+	stdscr.Clear()
+	stdscr.Keypad(true)
+
+	rows, cols := stdscr.Maxyx()
+	win, _ := NewWindow(rows - 2, cols - 1, 1, 0)
+	win.Keypad(true)
+
+	printmenu(&win, result_slice, active)
+
+	// key reading channel
+  key_ch := make(chan Key)
+	go ReadKeys(stdscr, key_ch)
+
+	// searching channels
+  read_ch := make(chan *SimilarDir, CHANNEL_BUFFER)
+  prepare_ch := make(chan *SimilarDir, CHANNEL_BUFFER)
+  compute_ch := make(chan *SimilarDir, CHANNEL_BUFFER)
+
+	for {
+		select {
+		case ch := <- key_ch:
+			switch KeyString(ch) {
+			case "q":
+				return
+			case "up":
+				if active == 0 {
+					active = len(result_slice) - 1
+				} else {
+					active -= 1
+				}
+			case "down":
+				if active == len(result_slice)-1 {
+					active = 0
+				} else {
+					active += 1
+				}
+			case "enter":
+				stdscr.Print(23, 0, "Choice #%d: %s selected", active, result_slice[active])
+				stdscr.ClearToEOL()
+				stdscr.Refresh()
+			default:
+				// some other key - restart search
+				query = query + KeyString(ch)
+  			search_pairs := adjpair.NewPairsFromString(query)
+				go cache.Read(read_ch)
+				go PreparePairs(read_ch, prepare_ch)
+				go ComputeSimilarities(search_pairs, prepare_ch, compute_ch)
+			}
+		case simdir := <-compute_ch:
+			if simdir.six > SIMILARITY_CUT {
+				result_slice = append(result_slice, simdir.dir)
+			}
+			if simdir == &LAST_DIR {
+				// last filepath - set clear flag
+				result_slice = []string{}
+			}
+		}
+
+		stdscr.Print(0, 0, " Query: " + query)
+		stdscr.ClearToEOL()
+		stdscr.Refresh()
+
+		printmenu(&win, result_slice, active)
+	}
+}
+
+func printmenu(w *Window, result_slice []string, active int) {
+	y, x := 2, 2
+	w.Box(0, 0)
+	for i, s := range result_slice {
+		if i == active {
+			w.AttrOn(A_REVERSE)
+			w.Print(y+i, x, s)
+			w.AttrOff(A_REVERSE)
+		} else {
+			w.Print(y+i, x, s)
+		}
+	}
+	w.Refresh()
 }
