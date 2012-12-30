@@ -1,6 +1,7 @@
 package main
 
 import (
+	"code.google.com/p/go-avltree/trunk"
   "os"
   "syscall"
   "strings"
@@ -16,6 +17,17 @@ type SimilarDir struct {
   pairs adjpair.Pairs
 	// similarity index
   six float64
+}
+
+// reverse comparsion
+func (o SimilarDir) Compare(b avltree.Interface) int {
+	if o.six > b.(SimilarDir).six {
+		return -1
+	}
+	if o.six < b.(SimilarDir).six {
+		return 1
+	}
+	return 0
 }
 
 type Cache struct {
