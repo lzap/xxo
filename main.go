@@ -120,7 +120,7 @@ func main() {
 			}
 		case ch := <-key_ch:
 			switch KeyString(ch) {
-			case "q":
+			case "esc":
 				return
 			case "up":
 				if active > 0 {
@@ -163,7 +163,7 @@ func main() {
 func printmenu(w *Window, result_tree *avltree.ObjectTree, active int) {
 	_, max_width := w.Maxyx()
 	max_width = max_width - 5
-	y, x := 0, 2
+	y, x := 1, 2
 	w.Box(0, 0)
 	i := 0
 	for v := range result_tree.Iter() {
