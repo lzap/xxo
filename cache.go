@@ -1,22 +1,22 @@
 package main
 
 import (
+	"bytes"
 	"code.google.com/p/go-avltree/trunk"
-  "os"
-  "syscall"
-  "strings"
-  "bytes"
-  "io"
-  "stringsim/adjpair"
+	"io"
+	"os"
+	"strings"
+	"stringsim/adjpair"
+	"syscall"
 )
 
 type SimilarDir struct {
 	// directory name
-  dir string
+	dir string
 	// pairs
-  pairs adjpair.Pairs
+	pairs adjpair.Pairs
 	// similarity index
-  six float64
+	six float64
 }
 
 // reverse comparsion
@@ -32,53 +32,60 @@ func (o SimilarDir) Compare(b avltree.Interface) int {
 
 type Cache struct {
 	map_file *os.File
-	buffer []byte
+	buffer   []byte
 }
 
 func OpenCache(filename string) (*Cache, error) {
 	cache := new(Cache)
-  file, err := os.Open(filename)
-  if err != nil {
-    return nil, err
-  }
+	file, err := os.Open(filename)
+	if err != nil {
+		return nil, err
+	}
 	cache.map_file = file
-  stat, err := cache.map_file.Stat()
-  if err != nil {
-    return nil, err
-  }
-  buffer, err := syscall.Mmap((int)(cache.map_file.Fd()), 0, (int)(stat.Size()), syscall.PROT_READ, syscall.MAP_SHARED)
-  if err != nil {
-    return nil, err
-  }
+	stat, err := cache.map_file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	buffer, err := syscall.Mmap((int)(cache.map_file.Fd()), 0, (int)(stat.Size()), syscall.PROT_READ, syscall.MAP_SHARED)
+	if err != nil {
+		return nil, err
+	}
 	cache.buffer = buffer
 	return cache, nil
 }
 
-func (cache *Cache) Read(out chan *SimilarDir) error {
-  buffer := bytes.NewBuffer(cache.buffer)
-  for {
-    path, err := buffer.ReadString(0)
-    if err == io.EOF {
-      out <-&LAST_DIR
-      break
-    } else if err != nil {
-      return err
-    }
-    dir := SimilarDir{strings.TrimSpace(path), nil, 0.0}
-    out <-&dir
-  }
+func (cache *Cache) Read(stop chan int, out chan *SimilarDir) error {
+	buffer := bytes.NewBuffer(cache.buffer)
+	for {
+		//select {
+		//case <-stop:
+		// stop signal catched - send nil to stop all workers
+		//out <-nil
+		//close(out)
+		//default:
+		path, err := buffer.ReadString(0)
+		if err == io.EOF {
+			out <- nil
+			break
+		} else if err != nil {
+			return err
+		}
+		dir := SimilarDir{strings.TrimSpace(path), nil, 0.0}
+		out <- &dir
+		//}
+	}
 	return nil
 }
 
 func (cache *Cache) Close() error {
 	err := syscall.Munmap(cache.buffer)
-  if err != nil {
-    return err
-  }
+	if err != nil {
+		return err
+	}
 	err = cache.map_file.Close()
-  if err != nil {
-    return err
-  }
+	if err != nil {
+		return err
+	}
 	return nil
 }
 

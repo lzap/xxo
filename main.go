@@ -1,12 +1,12 @@
 package main
 
 import (
-	. "code.google.com/p/goncurses"
 	"code.google.com/p/go-avltree/trunk"
+	. "code.google.com/p/goncurses"
 	"fmt"
 	"os"
+	"stringsim/adjpair"
 	"time"
-  "stringsim/adjpair"
 )
 
 const (
@@ -14,31 +14,40 @@ const (
 	WIDTH  = 30
 )
 
+// similarity bellow this threashold are cut off
 const SIMILARITY_CUT float64 = 0.00005
+
+// maximum results to hold in the AVL-tree
 const MAX_RESULTS = 1024
-const CHANNEL_BUFFER = 1024
+
+// buffer size  for all processing channels (do not set it too high)
+const CHANNEL_BUFFER = 32
+
+// the last similarity element indicating workers to stop
 var LAST_DIR SimilarDir = SimilarDir{"", nil, 0.0}
 
 func PreparePairs(in chan *SimilarDir, out chan *SimilarDir) {
-  for {
-    dir := <-in
-    dir.pairs = adjpair.NewPairsFromFilepath(dir.dir)
-    out <- dir
-    if dir == &LAST_DIR {
-      break
-    }
-  }
+	for {
+		dir := <-in
+		if dir == nil {
+			out <- nil
+			break
+		}
+		dir.pairs = adjpair.NewPairsFromFilepath(dir.dir)
+		out <- dir
+	}
 }
 
 func ComputeSimilarities(search_pairs adjpair.Pairs, in chan *SimilarDir, out chan *SimilarDir) {
-  for {
-    dir := <-in
-    dir.six = search_pairs.Match(dir.pairs)
-    out <- dir
-    if dir == &LAST_DIR {
-      break
-    }
-  }
+	for {
+		dir := <-in
+		if dir == nil {
+			out <- nil
+			break
+		}
+		dir.six = search_pairs.Match(dir.pairs)
+		out <- dir
+	}
 }
 
 func ReadKeys(stdscr Window, out chan Key) {
@@ -54,11 +63,11 @@ func ReadKeys(stdscr Window, out chan Key) {
 func main() {
 	// prepare cache
 	cache, err := OpenCache("var")
-  if err != nil {
-    fmt.Println("error opening file ", err)
-    os.Exit(1)
-  }
-  defer cache.Close()
+	if err != nil {
+		fmt.Println("error opening file ", err)
+		os.Exit(1)
+	}
+	defer cache.Close()
 
 	var active int
 	var query = ""
@@ -74,20 +83,23 @@ func main() {
 	stdscr.Keypad(true)
 
 	rows, cols := stdscr.Maxyx()
-	win, _ := NewWindow(rows - 3, cols - 1, 1, 0)
+	win, _ := NewWindow(rows-3, cols-1, 1, 0)
 	win.Keypad(true)
 	win.ScrollOk(true)
 
 	printmenu(&win, result_tree, active)
 
 	// key reading channel
-  key_ch := make(chan Key)
+	key_ch := make(chan Key)
 	go ReadKeys(stdscr, key_ch)
 
 	// searching channels
-  read_ch := make(chan *SimilarDir, CHANNEL_BUFFER)
-  prepare_ch := make(chan *SimilarDir, CHANNEL_BUFFER)
-  compute_ch := make(chan *SimilarDir, CHANNEL_BUFFER)
+	read_ch := make(chan *SimilarDir, CHANNEL_BUFFER)
+	prepare_ch := make(chan *SimilarDir, CHANNEL_BUFFER)
+	compute_ch := make(chan *SimilarDir, CHANNEL_BUFFER)
+
+	// stop channel
+	stop_ch := make(chan int)
 
 	// refresh screen channel
 	tick_ch := time.Tick(time.Millisecond * 250)
@@ -95,32 +107,28 @@ func main() {
 
 	for {
 		select {
-		case <- tick_ch:
-			if (needs_refresh) {
+		case <-tick_ch:
+			if needs_refresh {
 				printmenu(&win, result_tree, active)
 
-				stdscr.Print(0, 1, "Query: " + query)
+				stdscr.Print(0, 1, "Query: "+query)
 				stdscr.ClearToEOL()
-				stdscr.Print(rows - 1, 1, "Results: " + string(result_tree.Len()))
+				stdscr.Print(rows-1, 1, "Results: "+string(result_tree.Len()))
 				stdscr.ClearToEOL()
 				stdscr.Refresh()
 				needs_refresh = false
 			}
-		case ch := <- key_ch:
+		case ch := <-key_ch:
 			switch KeyString(ch) {
 			case "q":
 				return
 			case "up":
-				if active == 0 {
-					active = result_tree.Len() - 1
-				} else {
+				if active > 0 {
 					active -= 1
 				}
 				printmenu(&win, result_tree, active)
 			case "down":
-				if active == result_tree.Len() - 1 {
-					active = 0
-				} else {
+				if active < result_tree.Len()-1 {
 					active += 1
 				}
 				printmenu(&win, result_tree, active)
@@ -131,19 +139,21 @@ func main() {
 			default:
 				// some other key - restart search
 				query = query + KeyString(ch)
-  			search_pairs := adjpair.NewPairsFromString(query)
-				go cache.Read(read_ch)
+				// send stop signal
+				//stop_ch <- 0
+				// immediately start new routines for new computation
+				search_pairs := adjpair.NewPairsFromString(query)
+				go cache.Read(stop_ch, read_ch)
 				go PreparePairs(read_ch, prepare_ch)
 				go ComputeSimilarities(search_pairs, prepare_ch, compute_ch)
 			}
 		case simdir := <-compute_ch:
-			if simdir.six > SIMILARITY_CUT {
-				result_tree.Add(*simdir)
-				needs_refresh = true
-			}
-			if simdir == &LAST_DIR {
+			if simdir == nil {
 				// last filepath - set clear flag
 				//result_tree.Clear()
+				needs_refresh = true
+			} else if simdir.six > SIMILARITY_CUT {
+				result_tree.Add(*simdir)
 				needs_refresh = true
 			}
 		}
@@ -151,7 +161,8 @@ func main() {
 }
 
 func printmenu(w *Window, result_tree *avltree.ObjectTree, active int) {
-	_, max_width:= w.Maxyx(); max_width = max_width - 5
+	_, max_width := w.Maxyx()
+	max_width = max_width - 5
 	y, x := 0, 2
 	w.Box(0, 0)
 	i := 0
