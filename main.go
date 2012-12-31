@@ -85,9 +85,10 @@ func main() {
 	rows, cols := stdscr.Maxyx()
 	win, _ := NewWindow(rows-3, cols-1, 1, 0)
 	win.Keypad(true)
-	win.ScrollOk(true)
 
-	printmenu(&win, result_tree, active)
+	scroll_lines := 0
+
+	printmenu(&win, result_tree, active, scroll_lines)
 
 	// key reading channel
 	key_ch := make(chan Key)
@@ -103,36 +104,50 @@ func main() {
 
 	// refresh screen channel
 	tick_ch := time.Tick(time.Millisecond * 250)
-	needs_refresh := true
+	refresh := true
+	clear := false
 
 	for {
 		select {
 		case <-tick_ch:
-			if needs_refresh {
-				printmenu(&win, result_tree, active)
+			if refresh {
+				printmenu(&win, result_tree, active, scroll_lines)
 
 				stdscr.Print(0, 1, "Query: "+query)
 				stdscr.ClearToEOL()
-				stdscr.Print(rows-1, 1, "Results: "+string(result_tree.Len()))
+				stdscr.Print(rows-2, 2, fmt.Sprintf("Results: %d %d", result_tree.Len(), scroll_lines))
 				stdscr.ClearToEOL()
 				stdscr.Refresh()
-				needs_refresh = false
+				refresh = false
 			}
 		case ch := <-key_ch:
-			switch KeyString(ch) {
-			case "esc":
+			switch ch {
+			case 'q':
 				return
-			case "up":
+			case KEY_PAGEUP:
+				scroll_lines -= 10
+				if scroll_lines < 0 {
+					scroll_lines = 0
+				}
+				// refresh immediately
+				printmenu(&win, result_tree, active, scroll_lines)
+			case KEY_PAGEDOWN:
+				scroll_lines += 10
+				// refresh immediately
+				printmenu(&win, result_tree, active, scroll_lines)
+			case KEY_UP:
 				if active > 0 {
 					active -= 1
 				}
-				printmenu(&win, result_tree, active)
-			case "down":
+				// refresh immediately
+				printmenu(&win, result_tree, active, scroll_lines)
+			case KEY_DOWN:
 				if active < result_tree.Len()-1 {
 					active += 1
 				}
-				printmenu(&win, result_tree, active)
-			case "enter":
+				// refresh immediately
+				printmenu(&win, result_tree, active, scroll_lines)
+			case KEY_ENTER:
 				//stdscr.Print(23, 0, "Choice #%d: %s selected", active, result_tree[active])
 				stdscr.ClearToEOL()
 				stdscr.Refresh()
@@ -150,35 +165,45 @@ func main() {
 		case simdir := <-compute_ch:
 			if simdir == nil {
 				// last filepath - set clear flag
-				//result_tree.Clear()
-				needs_refresh = true
+				clear = true
+				refresh = true
 			} else if simdir.six > SIMILARITY_CUT {
+				// some results are being sent
+				if clear {
+					result_tree.Clear()
+					clear = false
+				}
 				result_tree.Add(*simdir)
-				needs_refresh = true
+				refresh = true
 			}
 		}
 	}
 }
 
-func printmenu(w *Window, result_tree *avltree.ObjectTree, active int) {
+func printmenu(w *Window, result_tree *avltree.ObjectTree, active int, scroll_lines int) {
 	_, max_width := w.Maxyx()
 	max_width = max_width - 5
 	y, x := 1, 2
-	w.Box(0, 0)
-	i := 0
+	i := -1
 	for v := range result_tree.Iter() {
+		i += 1
+		if i <= scroll_lines {
+			continue
+		}
 		label := v.(SimilarDir).dir
 		if len(label) > max_width && max_width > 0 {
 			label = label[0:max_width]
 		}
 		if i == active {
 			w.AttrOn(A_REVERSE)
-			w.Print(y+i, x, label)
+			w.Print(y, x, label)
 			w.AttrOff(A_REVERSE)
 		} else {
-			w.Print(y+i, x, label)
+			w.Print(y, x, label)
 		}
-		i += 1
+		w.ClearToEOL()
+		y += 1
 	}
+	w.Box(0, 0)
 	w.Refresh()
 }
