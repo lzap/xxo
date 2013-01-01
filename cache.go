@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync/atomic"
 	"stringsim/adjpair"
 	"syscall"
 )
@@ -35,6 +36,11 @@ type Cache struct {
 	buffer   []byte
 }
 
+type CacheReader struct {
+	cache *Cache
+	terminate int32
+}
+
 func OpenCache(filename string) (*Cache, error) {
 	cache := new(Cache)
 	file, err := os.Open(filename)
@@ -54,25 +60,38 @@ func OpenCache(filename string) (*Cache, error) {
 	return cache, nil
 }
 
-func (cache *Cache) Read(stop chan int, out chan *SimilarDir) error {
-	buffer := bytes.NewBuffer(cache.buffer)
+func NewCacheReader(cache *Cache) *CacheReader {
+	return &CacheReader{cache: cache}
+}
+
+func (creader *CacheReader) isTerminating() bool {
+    return atomic.LoadInt32(&creader.terminate) != 0
+}
+
+func (creader *CacheReader) setTerminate(value bool) {
+    if value {
+        atomic.StoreInt32(&creader.terminate, 1)
+    } else {
+        atomic.StoreInt32(&creader.terminate, 0)
+    }
+}
+
+func (creader *CacheReader) Read(out chan *SimilarDir) error {
+	buffer := bytes.NewBuffer(creader.cache.buffer)
 	for {
-		//select {
-		//case <-stop:
-		// stop signal catched - send nil to stop all workers
-		//out <-nil
-		//close(out)
-		//default:
 		path, err := buffer.ReadString(0)
 		if err == io.EOF {
 			out <- nil
+			close(out)
 			break
 		} else if err != nil {
 			return err
 		}
-		dir := SimilarDir{strings.TrimSpace(path), nil, 0.0}
-		out <- &dir
-		//}
+		out <- &SimilarDir{strings.TrimSpace(path), nil, 0.0}
+		if creader.isTerminating() {
+			close(out)
+			break
+		}
 	}
 	return nil
 }

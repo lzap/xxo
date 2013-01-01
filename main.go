@@ -86,6 +86,8 @@ func main() {
 	win, _ := NewWindow(rows-3, cols-1, 1, 0)
 	win.Keypad(true)
 
+	// TODO subwindow?
+
 	scroll_lines := 0
 
 	printmenu(&win, result_tree, active, scroll_lines)
@@ -95,12 +97,10 @@ func main() {
 	go ReadKeys(stdscr, key_ch)
 
 	// searching channels
-	read_ch := make(chan *SimilarDir, CHANNEL_BUFFER)
-	prepare_ch := make(chan *SimilarDir, CHANNEL_BUFFER)
-	compute_ch := make(chan *SimilarDir, CHANNEL_BUFFER)
-
-	// stop channel
-	stop_ch := make(chan int)
+	var read_ch, prepare_ch, compute_ch chan *SimilarDir
+	
+	// reader instance (the first worker in the chain)
+	var reader *CacheReader
 
 	// refresh screen channel
 	tick_ch := time.Tick(time.Millisecond * 250)
@@ -122,6 +122,8 @@ func main() {
 			}
 		case ch := <-key_ch:
 			switch ch {
+			case 27:
+				return
 			case 'q':
 				return
 			case KEY_PAGEUP:
@@ -155,10 +157,14 @@ func main() {
 				// some other key - restart search
 				query = query + KeyString(ch)
 				// send stop signal
-				//stop_ch <- 0
+
 				// immediately start new routines for new computation
 				search_pairs := adjpair.NewPairsFromString(query)
-				go cache.Read(stop_ch, read_ch)
+				read_ch = make(chan *SimilarDir, CHANNEL_BUFFER)
+				prepare_ch = make(chan *SimilarDir, CHANNEL_BUFFER)
+				compute_ch = make(chan *SimilarDir, CHANNEL_BUFFER)
+				reader = NewCacheReader(cache)
+				go reader.Read(read_ch)
 				go PreparePairs(read_ch, prepare_ch)
 				go ComputeSimilarities(search_pairs, prepare_ch, compute_ch)
 			}
