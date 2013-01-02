@@ -38,7 +38,7 @@ type Cache struct {
 
 type CacheReader struct {
 	cache *Cache
-	terminate int32
+	terminate *int32
 }
 
 func OpenCache(filename string) (*Cache, error) {
@@ -61,37 +61,33 @@ func OpenCache(filename string) (*Cache, error) {
 }
 
 func NewCacheReader(cache *Cache) *CacheReader {
-	return &CacheReader{cache: cache}
+	return &CacheReader{cache: cache, terminate: new(int32)}
 }
 
 func (creader *CacheReader) isTerminating() bool {
-    return atomic.LoadInt32(&creader.terminate) != 0
+	return atomic.LoadInt32(creader.terminate) != 0
 }
 
 func (creader *CacheReader) setTerminate(value bool) {
-    if value {
-        atomic.StoreInt32(&creader.terminate, 1)
-    } else {
-        atomic.StoreInt32(&creader.terminate, 0)
-    }
+	if value {
+		atomic.StoreInt32(creader.terminate, 1)
+	} else {
+		atomic.StoreInt32(creader.terminate, 0)
+	}
 }
 
 func (creader *CacheReader) Read(out chan *SimilarDir) error {
+	creader.setTerminate(false)
 	buffer := bytes.NewBuffer(creader.cache.buffer)
 	for {
 		path, err := buffer.ReadString(0)
-		if err == io.EOF {
-			out <- nil
+		if err == io.EOF || creader.isTerminating() {
 			close(out)
 			break
 		} else if err != nil {
 			return err
 		}
 		out <- &SimilarDir{strings.TrimSpace(path), nil, 0.0}
-		if creader.isTerminating() {
-			close(out)
-			break
-		}
 	}
 	return nil
 }

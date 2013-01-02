@@ -23,38 +23,28 @@ const MAX_RESULTS = 1024
 // buffer size  for all processing channels (do not set it too high)
 const CHANNEL_BUFFER = 32
 
-// the last similarity element indicating workers to stop
-var LAST_DIR SimilarDir = SimilarDir{"", nil, 0.0}
-
 func PreparePairs(in chan *SimilarDir, out chan *SimilarDir) {
-	for {
-		dir := <-in
-		if dir == nil {
-			out <- nil
-			break
-		}
+	defer close(out) 
+	for dir := range in { 
 		dir.pairs = adjpair.NewPairsFromFilepath(dir.dir)
 		out <- dir
-	}
+	} 
 }
 
 func ComputeSimilarities(search_pairs adjpair.Pairs, in chan *SimilarDir, out chan *SimilarDir) {
-	for {
-		dir := <-in
-		if dir == nil {
-			out <- nil
-			break
-		}
+	defer close(out) 
+	for dir := range in { 
 		dir.six = search_pairs.Match(dir.pairs)
 		out <- dir
-	}
+	} 
 }
 
 func ReadKeys(stdscr Window, out chan Key) {
+	defer close(out) 
 	for {
 		ch := stdscr.GetChar()
 		out <- ch
-		if KeyString(ch) == "q" {
+		if ch == 27 || ch == 'q' {
 			break
 		}
 	}
@@ -90,8 +80,6 @@ func main() {
 
 	scroll_lines := 0
 
-	printmenu(&win, result_tree, active, scroll_lines)
-
 	// key reading channel
 	key_ch := make(chan Key)
 	go ReadKeys(stdscr, key_ch)
@@ -106,19 +94,23 @@ func main() {
 	tick_ch := time.Tick(time.Millisecond * 250)
 	refresh := true
 	clear := false
+	message := ""
+	refresh_count := 0
 
 	for {
 		select {
 		case <-tick_ch:
 			if refresh {
-				printmenu(&win, result_tree, active, scroll_lines)
+				RedrawResults(&win, result_tree, active, scroll_lines)
 
-				stdscr.Print(0, 1, "Query: "+query)
+				stdscr.Print(0, 2, "Query: "+query)
 				stdscr.ClearToEOL()
-				stdscr.Print(rows-2, 2, fmt.Sprintf("Results: %d %d", result_tree.Len(), scroll_lines))
+				message = fmt.Sprintf("read=%d, prepare=%d, compute=%d", len(read_ch), len(prepare_ch), len(compute_ch))
+				stdscr.Print(rows-2, 2, fmt.Sprintf("Results: %d %d %s %d", result_tree.Len(), scroll_lines, message, refresh_count))
 				stdscr.ClearToEOL()
 				stdscr.Refresh()
 				refresh = false
+				refresh_count += 1
 			}
 		case ch := <-key_ch:
 			switch ch {
@@ -132,23 +124,23 @@ func main() {
 					scroll_lines = 0
 				}
 				// refresh immediately
-				printmenu(&win, result_tree, active, scroll_lines)
+				RedrawResults(&win, result_tree, active, scroll_lines)
 			case KEY_PAGEDOWN:
 				scroll_lines += 10
 				// refresh immediately
-				printmenu(&win, result_tree, active, scroll_lines)
+				RedrawResults(&win, result_tree, active, scroll_lines)
 			case KEY_UP:
 				if active > 0 {
 					active -= 1
 				}
 				// refresh immediately
-				printmenu(&win, result_tree, active, scroll_lines)
+				RedrawResults(&win, result_tree, active, scroll_lines)
 			case KEY_DOWN:
 				if active < result_tree.Len()-1 {
 					active += 1
 				}
 				// refresh immediately
-				printmenu(&win, result_tree, active, scroll_lines)
+				RedrawResults(&win, result_tree, active, scroll_lines)
 			case KEY_ENTER:
 				//stdscr.Print(23, 0, "Choice #%d: %s selected", active, result_tree[active])
 				stdscr.ClearToEOL()
@@ -156,10 +148,12 @@ func main() {
 			default:
 				// some other key - restart search
 				query = query + KeyString(ch)
-				// send stop signal
-
-				// immediately start new routines for new computation
 				search_pairs := adjpair.NewPairsFromString(query)
+				// send stop signal to the old reader
+				if reader != nil {
+					reader.setTerminate(true)
+				}
+				// immediately start new goroutines for new computation
 				read_ch = make(chan *SimilarDir, CHANNEL_BUFFER)
 				prepare_ch = make(chan *SimilarDir, CHANNEL_BUFFER)
 				compute_ch = make(chan *SimilarDir, CHANNEL_BUFFER)
@@ -168,11 +162,13 @@ func main() {
 				go PreparePairs(read_ch, prepare_ch)
 				go ComputeSimilarities(search_pairs, prepare_ch, compute_ch)
 			}
-		case simdir := <-compute_ch:
-			if simdir == nil {
-				// last filepath - set clear flag
+		case simdir, ok := <-compute_ch:
+			if ! ok {
+				// input channel was closed - set clear flag
 				clear = true
 				refresh = true
+				// and set compute channel to nil channel
+				compute_ch = nil
 			} else if simdir.six > SIMILARITY_CUT {
 				// some results are being sent
 				if clear {
@@ -186,7 +182,7 @@ func main() {
 	}
 }
 
-func printmenu(w *Window, result_tree *avltree.ObjectTree, active int, scroll_lines int) {
+func RedrawResults(w *Window, result_tree *avltree.ObjectTree, active int, scroll_lines int) {
 	_, max_width := w.Maxyx()
 	max_width = max_width - 5
 	y, x := 1, 2
