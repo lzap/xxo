@@ -24,23 +24,23 @@ const MAX_RESULTS = 1024
 const CHANNEL_BUFFER = 32
 
 func PreparePairs(in chan *SimilarDir, out chan *SimilarDir) {
-	defer close(out) 
-	for dir := range in { 
+	defer close(out)
+	for dir := range in {
 		dir.pairs = adjpair.NewPairsFromFilepath(dir.dir)
 		out <- dir
-	} 
+	}
 }
 
 func ComputeSimilarities(search_pairs adjpair.Pairs, in chan *SimilarDir, out chan *SimilarDir) {
-	defer close(out) 
-	for dir := range in { 
+	defer close(out)
+	for dir := range in {
 		dir.six = search_pairs.Match(dir.pairs)
 		out <- dir
-	} 
+	}
 }
 
 func ReadKeys(stdscr Window, out chan Key) {
-	defer close(out) 
+	defer close(out)
 	for {
 		ch := stdscr.GetChar()
 		out <- ch
@@ -86,7 +86,7 @@ func main() {
 
 	// searching channels
 	var read_ch, prepare_ch, compute_ch chan *SimilarDir
-	
+
 	// reader instance (the first worker in the chain)
 	var reader *CacheReader
 
@@ -148,6 +148,7 @@ func main() {
 			default:
 				// some other key - restart search
 				query = query + KeyString(ch)
+				// TODO refresh first line IMMEDIATELY
 				search_pairs := adjpair.NewPairsFromString(query)
 				// send stop signal to the old reader
 				if reader != nil {
@@ -163,12 +164,14 @@ func main() {
 				go ComputeSimilarities(search_pairs, prepare_ch, compute_ch)
 			}
 		case simdir, ok := <-compute_ch:
-			if ! ok {
+			if !ok {
 				// input channel was closed - set clear flag
 				clear = true
 				refresh = true
-				// and set compute channel to nil channel
+				// and stop reading from closed channel
 				compute_ch = nil
+				// TODO instead SIMILARITY_CUT use ix of the last element
+				// and MEASURE the difference
 			} else if simdir.six > SIMILARITY_CUT {
 				// some results are being sent
 				if clear {
@@ -192,7 +195,7 @@ func RedrawResults(w *Window, result_tree *avltree.ObjectTree, active int, scrol
 		if i <= scroll_lines {
 			continue
 		}
-		label := v.(SimilarDir).dir
+		label := v.(SimilarDir).dir + " - " + fmt.Sprintf("%g", v.(SimilarDir).six)
 		if len(label) > max_width && max_width > 0 {
 			label = label[0:max_width]
 		}

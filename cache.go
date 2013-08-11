@@ -6,8 +6,8 @@ import (
 	"io"
 	"os"
 	"strings"
-	"sync/atomic"
 	"stringsim/adjpair"
+	"sync/atomic"
 	"syscall"
 )
 
@@ -37,7 +37,7 @@ type Cache struct {
 }
 
 type CacheReader struct {
-	cache *Cache
+	cache     *Cache
 	terminate *int32
 }
 
